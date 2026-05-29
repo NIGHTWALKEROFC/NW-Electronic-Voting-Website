@@ -627,7 +627,7 @@ function checkHash() {
     if (!adminLoggedIn) { location.hash = '#admin'; return; }
     go('s-admin'); loadAdminPanel(); return;
   }
-  if (h === '#request') { go('s-request'); return; }
+  if (h === '#request') { go('s-request'); resetRequestForm(); return; }
   if (h.startsWith('#election/')) { loadElection(h.slice(10)); return; }
   if (h.startsWith('#mod/')) {
     go('s-mod-login');
@@ -965,18 +965,29 @@ async function adminCreateElection() {
   const title = document.getElementById('ac-title').value.trim();
   const desc  = document.getElementById('ac-desc').value.trim();
   const msg   = document.getElementById('ac-msg');
+  const btn   = document.querySelector('[onclick="adminCreateElection()"]');
   if (!title) { msg.className='msg bad'; msg.textContent='Title is required.'; return; }
-  const ref = await db.collection('elections').add({
-    title, description:desc, status:'approved',
-    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-    createdBy:'admin', moderatorKey:null,
-    voteStart:null, voteEnd:null, resultsPublished:false, demoMode:false,
-    demoStart:null, demoEnd:null, featured:false
-  });
-  document.getElementById('ac-title').value='';
-  document.getElementById('ac-desc').value='';
-  msg.className='msg ok'; msg.textContent=`Election created! Link: ${location.origin}${location.pathname}#election/${ref.id}`;
-  await loadAdminElections();
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const ref = await db.collection('elections').add({
+      title, description:desc, status:'approved',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      createdBy:'admin', moderatorKey:null,
+      voteStart:null, voteEnd:null, resultsPublished:false, demoMode:false,
+      demoStart:null, demoEnd:null, featured:false
+    });
+    document.getElementById('ac-title').value='';
+    document.getElementById('ac-desc').value='';
+    const link = `${location.origin}${location.pathname}#election/${ref.id}`;
+    msg.className='msg ok';
+    msg.innerHTML=`✓ Election created!<br><small style="word-break:break-all">🔗 ${link}</small>`;
+    toast('Election created!','ok');
+    await loadAdminElections();
+    setTimeout(()=>{ msg.className='msg'; },8000);
+  } catch(e) {
+    msg.className='msg bad'; msg.textContent='Error: '+e.message;
+  }
+  btn.disabled = false; btn.textContent = 'Create Election';
 }
 
 async function deleteElection(eid) {
@@ -1084,20 +1095,30 @@ async function resetVoterVote() {
   setTimeout(()=>{msg.className='msg';},4000);
 }
 
-// ── Approve / Reject requests ─────────────────────────────────
 async function approveRequest(rid) {
-  const snap=await db.collection('requests').doc(rid).get(), r=snap.data();
-  if (r.requestType==='new') {
-    const er=db.collection('elections').doc();
-    await er.set({title:r.electionTitle,description:r.description,status:'approved',createdAt:firebase.firestore.FieldValue.serverTimestamp(),createdBy:r.requestedBy,moderatorKey:r.moderatorKey,voteStart:null,voteEnd:null,resultsPublished:false,demoMode:false,featured:false});
-    await db.collection('requests').doc(rid).update({status:'approved',electionId:er.id});
-    toast(`Election approved! ID: ${er.id}`,'ok');
-  } else {
-    await applyModAction(r);
-    await db.collection('requests').doc(rid).update({status:'approved'});
-    toast('Request approved.','ok');
-  }
-  await Promise.all([loadPendingRequests(),loadAdminElections()]);
+  const btn = document.querySelector(`[onclick="approveRequest('${rid}')"]`);
+  const rbtn = document.querySelector(`[onclick="rejectRequest('${rid}')"]`);
+  if(btn) { btn.disabled=true; btn.textContent='Approving…'; }
+  if(rbtn) rbtn.disabled=true;
+  try {
+    const snap=await db.collection('requests').doc(rid).get(), r=snap.data();
+    if (r.requestType==='new') {
+      const er=db.collection('elections').doc();
+      await er.set({title:r.electionTitle,description:r.description,status:'approved',createdAt:firebase.firestore.FieldValue.serverTimestamp(),createdBy:r.requestedBy,moderatorKey:r.moderatorKey,voteStart:null,voteEnd:null,resultsPublished:false,demoMode:false,featured:false});
+      await db.collection('requests').doc(rid).update({status:'approved',electionId:er.id});
+      toast('Election approved!','ok');
+    } else {
+      await applyModAction(r);
+      await db.collection('requests').doc(rid).update({status:'approved'});
+      toast('Request approved.','ok');
+    }
+    // Remove card from UI immediately
+    const card = document.querySelector(`[onclick="approveRequest('${rid}')"]`)?.closest('.req-card');
+    if(card) card.remove();
+    const list = document.getElementById('admin-requests-list');
+    if(list && !list.querySelector('.req-card')) list.innerHTML='<div class="empty-state"><p>No pending requests.</p></div>';
+    await loadAdminElections();
+  } catch(e) { toast('Error: '+e.message,'bad'); if(btn){btn.disabled=false;btn.textContent='Approve';} if(rbtn)rbtn.disabled=false; }
 }
 async function applyModAction(r) {
   const ref=db.collection('elections').doc(r.electionId);
@@ -1110,9 +1131,19 @@ async function applyModAction(r) {
   }
 }
 async function rejectRequest(rid) {
-  await db.collection('requests').doc(rid).update({status:'rejected'});
-  toast('Request rejected.','bad');
-  await loadPendingRequests();
+  const btn = document.querySelector(`[onclick="rejectRequest('${rid}')"]`);
+  const abtn = document.querySelector(`[onclick="approveRequest('${rid}')"]`);
+  if(btn) { btn.disabled=true; btn.textContent='Rejecting…'; }
+  if(abtn) abtn.disabled=true;
+  try {
+    await db.collection('requests').doc(rid).update({status:'rejected'});
+    toast('Request rejected.','bad');
+    // Remove card from UI immediately
+    const card = btn?.closest('.req-card');
+    if(card) card.remove();
+    const list = document.getElementById('admin-requests-list');
+    if(list && !list.querySelector('.req-card')) list.innerHTML='<div class="empty-state"><p>No pending requests.</p></div>';
+  } catch(e) { toast('Error: '+e.message,'bad'); if(btn){btn.disabled=false;btn.textContent='Reject';} if(abtn)abtn.disabled=false; }
 }
 
 // ── AEM Candidates ────────────────────────────────────────────
@@ -1315,20 +1346,44 @@ async function submitModRequest(type) {
 
 // ── Request election (public) ─────────────────────────────────
 async function submitElectionRequest() {
-  const title=document.getElementById('req-title').value.trim();
-  const desc=document.getElementById('req-desc').value.trim();
-  const by=document.getElementById('req-by').value.trim();
-  const contact=document.getElementById('req-contact').value.trim();
-  const msg=document.getElementById('req-msg');
-  if(!title||!desc||!by){msg.className='msg bad';msg.textContent='Fill all required fields.';return;}
-  const key=crypto.randomUUID().split('-')[0].toUpperCase();
-  await db.collection('requests').add({electionTitle:title,description:desc,requestedBy:by,contact,requestType:'new',status:'pending',moderatorKey:key,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
-  document.getElementById('req-key').textContent=key;
-  document.getElementById('req-form-wrap').style.display='none';
-  document.getElementById('req-success-wrap').style.display='block';
+  const title   = document.getElementById('req-title').value.trim();
+  const desc    = document.getElementById('req-desc').value.trim();
+  const by      = document.getElementById('req-by').value.trim();
+  const contact = document.getElementById('req-contact').value.trim();
+  const msg     = document.getElementById('req-msg');
+  const btn     = document.querySelector('[onclick="submitElectionRequest()"]');
+  if(!title||!desc||!by){ msg.className='msg bad'; msg.textContent='Fill all required fields.'; return; }
+  btn.disabled=true; btn.textContent='Submitting…';
+  try {
+    const key=crypto.randomUUID().split('-')[0].toUpperCase();
+    await db.collection('requests').add({electionTitle:title,description:desc,requestedBy:by,contact,requestType:'new',status:'pending',moderatorKey:key,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    // Clear fields
+    document.getElementById('req-title').value='';
+    document.getElementById('req-desc').value='';
+    document.getElementById('req-by').value='';
+    document.getElementById('req-contact').value='';
+    msg.className='msg';
+    document.getElementById('req-key').textContent=key;
+    document.getElementById('req-form-wrap').style.display='none';
+    document.getElementById('req-success-wrap').style.display='block';
+  } catch(e) {
+    msg.className='msg bad'; msg.textContent='Error: '+e.message;
+    btn.disabled=false; btn.textContent='Submit Request';
+  }
 }
 
 // ── Utilities ─────────────────────────────────────────────────
+function resetRequestForm() {
+  document.getElementById('req-form-wrap').style.display='block';
+  document.getElementById('req-success-wrap').style.display='none';
+  document.getElementById('req-title').value='';
+  document.getElementById('req-desc').value='';
+  document.getElementById('req-by').value='';
+  document.getElementById('req-contact').value='';
+  document.getElementById('req-msg').className='msg';
+  const btn = document.querySelector('[onclick="submitElectionRequest()"]');
+  if(btn){ btn.disabled=false; btn.textContent='Submit Request'; }
+}
 function copyText(t){navigator.clipboard.writeText(t).then(()=>toast('Link copied!','ok'));}
 function openAbout(){document.getElementById('about-modal').classList.add('open');}
 document.addEventListener('click',e=>{if(e.target.classList.contains('modal-overlay'))e.target.classList.remove('open');});
